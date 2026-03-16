@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aula Virtual</title>
-<script src="https://cdn.jsdelivr.net/npm/firebase@8.10.1/firebase-app.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/firebase@8.10.1/firebase-database.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
@@ -99,271 +97,147 @@ const SK = {
 const COLORS = ['#185FA5','#3B6D11','#854F0B','#534AB7','#993556','#0F6E56','#993C1D'];
 
 // ── Storage — local server API ──────────────────────────────────────────
-// ── Firebase Realtime Database v8 ────────────────────────────────────────
-// EDITA AQUI: pega la URL de tu Firebase Realtime Database
-const FB_DB_URL = "https://mi-aula-10abe-default-rtdb.firebaseio.com";
+// ── Google Sheets via opensheet.elk.sh ───────────────────────────────────
+// CONFIGURACION: ID de tu Google Sheet (está en la URL de la hoja)
+// Ejemplo URL: docs.google.com/spreadsheets/d/ESTE_ES_EL_ID/edit
+const SHEET_ID   = "1h_hsWvo_oBXSR6qnFtWYbOEBwwBC4mJZM1cjDMeIxlk";
+const SHEET_NAME = "Hoja 1";   // nombre de la pestaña
 
-let _db = null;
+// opensheet.elk.sh lee la hoja como JSON (solo lectura publica)
+// Para escritura usamos Google Sheets API v4 con clave publica
+// PERO: usaremos una hoja como "log" donde cada fila es clave=valor
+// Escritura via Google Apps Script URL (ya la tenemos):
+const GAS_URL = "https://script.google.com/macros/s/AKfycbxBwAqPQ0Gu_cIkA5mhe3g9QBGL2ULTjUXnw9cz_KaxgcK5gYt_McNh--HQWwOFtBlfbA/exec";
+
 let storageOK = false;
 
-function fk(k){ return 'av/' + String(k).replace(/[.#$\[\]]/g,'_'); }
+// Para valores grandes, dividir en trozos de 800 chars
+const CHUNK = 800;
 
-async function sGet(k){
-  if(!_db) return null;
-  try{ const snap=await _db.ref(fk(k)).once('value'); return snap.exists()?snap.val():null; }
-  catch{ return null; }
-}
-async function sSet(k,v){
-  if(!_db) return false;
-  try{ await _db.ref(fk(k)).set(v); return true; }catch{ return false; }
-}
-async function sDel(k){
-  if(!_db) return;
-  try{ await _db.ref(fk(k)).remove(); }catch{}
-}
-async function checkStorage(){
-  if(!FB_DB_URL||FB_DB_URL.includes('PEGA_AQUI')){ return; }
-  try{
-    if(!firebase.apps.length) firebase.initializeApp({databaseURL:FB_DB_URL});
-    _db=firebase.database();
-    await _db.ref('_ping').set(Date.now());
-    storageOK=true;
-  }catch(e){ storageOK=false; console.error('Firebase:',e.message); }
-}
-
-// ── DOCX reader ───────────────────────────────────────────────────────────
-function readDocx(file, mode){
-  return new Promise((res,rej)=>{
-    const r=new FileReader();
-    r.onload=async e=>{
-      try{
-        const fn=mode==='html'?mammoth.convertToHtml:mammoth.extractRawText;
-        const result=await fn({arrayBuffer:e.target.result});
-        res(result.value);
-      }catch(err){rej(err)}
-    };
-    r.readAsArrayBuffer(file);
-  });
-}
-
-
-// ── EXAM PARSER (pure JS, no API needed) ─────────────────────────────────
-function parseExamText(text){
-  // Normalize: remove ** bold markers, collapse whitespace
-  const clean = text.replace(/\*\*/g,'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
-  const lines = clean.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
-
-  // Try to find a title (first line that doesn't look like a question/option)
-  let title = 'Examen';
-  for(const l of lines){
-    if(!/^\d+[\.\)]\s/.test(l) && !/^[a-dA-D][\.\)]\s/.test(l) && l.length>5 && l.length<120){
-      title = l; break;
-    }
+async function gasCall(params) {
+  const qs = Object.entries(params)
+    .map(([k,v]) => encodeURIComponent(k) + '=' + encodeURIComponent(String(v)))
+    .join('&');
+  // Usar no-cors para evitar bloqueos de CORS; la respuesta sera opaca
+  // pero el servidor SI ejecuta el codigo
+  try {
+    const r = await fetch(GAS_URL + '?' + qs, {
+      method: 'GET',
+      mode: 'no-cors'
+    });
+    return '1'; // con no-cors no podemos leer la respuesta, asumimos exito
+  } catch(e) {
+    throw e;
   }
-
-  const questions = [];
-  let currentQ = null;
-
-  for(const line of lines){
-    // Match question: starts with number followed by . or )
-    const qMatch = line.match(/^(\d{1,2})[\.\)]\s+(.+)/);
-    if(qMatch){
-      if(currentQ && currentQ.text) questions.push(currentQ);
-      currentQ = { num: parseInt(qMatch[1]), text: qMatch[2].trim(), options: {} };
-      continue;
-    }
-    // Match option: starts with a/b/c/d followed by ) or .
-    const oMatch = line.match(/^([a-dA-D])[\.\)]\s+(.+)/);
-    if(oMatch && currentQ){
-      currentQ.options[oMatch[1].toLowerCase()] = oMatch[2].trim();
-      continue;
-    }
-    // Continuation of question text
-    if(currentQ && !currentQ.options.a && line.length > 2){
-      currentQ.text += ' ' + line;
-    }
-  }
-  if(currentQ && currentQ.text) questions.push(currentQ);
-
-  return { title, questions };
 }
 
-function parseAnswerKeyText(text){
-  const clean = text.replace(/\*\*/g,'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
-  const lines = clean.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
-  const answers = {};
-
-  for(const line of lines){
-    // Pattern 1: "1  b)  Explanation..." or "1   b)..."
-    const p1 = line.match(/^(\d{1,2})\s+([a-dA-D])[\.\)]/);
-    if(p1){ answers[p1[1]] = p1[2].toLowerCase(); continue; }
-
-    // Pattern 2: "1) b)" or "1. b)"
-    const p2 = line.match(/^(\d{1,2})[\.\)]\s+([a-dA-D])[\.\)]/);
-    if(p2){ answers[p2[1]] = p2[2].toLowerCase(); continue; }
-
-    // Pattern 3: cells separated by tabs "1\tb\tExplanation"
-    const p3 = line.match(/^(\d{1,2})\t([a-dA-D])[\.\)]?/);
-    if(p3){ answers[p3[1]] = p3[2].toLowerCase(); continue; }
-
-    // Pattern 4: inline "pregunta 1: b" or "1: b"
-    const p4 = line.match(/(?:pregunta\s+)?(\d{1,2})\s*[:=]\s*([a-dA-D])/i);
-    if(p4){ answers[p4[1]] = p4[2].toLowerCase(); continue; }
-
-    // Pattern 5: table row with answer in second column (space-separated)
-    const p5 = line.match(/^(\d{1,3})\s+([a-dA-D])\)?/);
-    if(p5){ answers[p5[1]] = p5[2].toLowerCase(); continue; }
-  }
-
-  return { answers };
-}
-
-
-function gradeTrunc(correct,total){return Math.trunc((correct/total)*100)/10;}
-
-
-// ── Excel export / import ─────────────────────────────────────────────────
-function exportExcel(){
-  const{exam,answerKey}=S;
-  if(!exam||!answerKey){set({err:'No hay examen cargado para exportar'});return;}
-  const wb=XLSX.utils.book_new();
-  const rows=[
-    ['AULA VIRTUAL — EXAMEN'],
-    ['Título:',exam.title||''],
-    ['Exportado:',new Date().toLocaleString('es-MX')],
-    ['Preguntas:',(exam.questions||[]).length],
-    [],
-    ['#','Pregunta','Opción A','Opción B','Opción C','Opción D','Respuesta Correcta']
-  ];
-  (exam.questions||[]).forEach(q=>{
-    const ans=(answerKey.answers||{})[String(q.num)]||'';
-    rows.push([q.num,q.text||'',q.options?.a||'',q.options?.b||'',q.options?.c||'',q.options?.d||'',ans.toUpperCase()]);
-  });
-  const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols']=[{wch:5},{wch:60},{wch:30},{wch:30},{wch:30},{wch:30},{wch:12}];
-  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:6}}];
-  XLSX.utils.book_append_sheet(wb,ws,'Examen');
-  XLSX.writeFile(wb,(exam.title||'examen').replace(/[^a-zA-Z0-9_\-áéíóúÁÉÍÓÚñÑ ]/g,'_')+'.xlsx');
-}
-
-function importExcel(file){
-  if(!file)return;
-  const r=new FileReader();
-  r.onload=e=>{
-    try{
-      const wb=XLSX.read(e.target.result,{type:'array'});
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-      let headerIdx=-1;
-      for(let i=0;i<rows.length;i++){
-        if(rows[i]&&(String(rows[i][0]).trim()==='#'||String(rows[i][1]).toLowerCase().includes('pregunta'))){headerIdx=i;break;}
+// Para leer usamos opensheet que SI tiene CORS
+async function sheetRead() {
+  const url = 'https://opensheet.elk.sh/' + SHEET_ID + '/' + encodeURIComponent(SHEET_NAME);
+  const r = await fetch(url);
+  if (!r.ok) return {};
+  const rows = await r.json();
+  const obj = {};
+  if (Array.isArray(rows)) {
+    rows.forEach(row => {
+      if (row.clave !== undefined && row.valor !== undefined) {
+        obj[String(row.clave)] = String(row.valor);
       }
-      if(headerIdx===-1)throw new Error('No se encontró la fila de encabezados (#, Pregunta...)');
-      let title='Examen';
-      for(let i=0;i<headerIdx;i++){
-        if(rows[i]&&String(rows[i][0]).toLowerCase().includes('t')){
-          const v=String(rows[i][1]||'');
-          if(v&&v.length>1&&!v.includes('/')){title=v;break;}
-        }
-      }
-      const questions=[];const answers={};
-      for(let i=headerIdx+1;i<rows.length;i++){
-        const row=rows[i];
-        if(!row||!row[0])continue;
-        const num=parseInt(String(row[0]));
-        if(isNaN(num))continue;
-        const q={num,text:String(row[1]||'').trim(),options:{a:String(row[2]||'').trim(),b:String(row[3]||'').trim(),c:String(row[4]||'').trim(),d:String(row[5]||'').trim()}};
-        const ans=String(row[6]||'').trim().toLowerCase();
-        if(q.text){questions.push(q);if(ans)answers[String(num)]=ans;}
-      }
-      if(questions.length===0)throw new Error('No se encontraron preguntas en el archivo.');
-      const mq=Array.from({length:20},(_,i)=>({num:i+1,text:'',a:'',b:'',c:'',d:'',correct:''}));
-      questions.forEach(q=>{const idx=q.num-1;if(idx>=0&&idx<20){mq[idx].text=q.text;mq[idx].a=q.options.a;mq[idx].b=q.options.b;mq[idx].c=q.options.c;mq[idx].d=q.options.d;mq[idx].correct=answers[String(q.num)]||'';}});
-      set({exam:{title,questions},answerKey:{answers},manualTitle:title,manualQuestions:mq,
-        ok:'✓ Importado: "'+title+'" — '+questions.length+' preguntas',err:''});
-    }catch(err){set({err:'Error al importar: '+err.message});}
-  };
-  r.readAsArrayBuffer(file);
-}
-
-// ── Manual/Paste exam builders ────────────────────────────────────────────
-function buildExamFromManual(){
-  const{manualTitle,manualQuestions}=S;
-  if(!manualTitle.trim()){set({err:'Escribe el título del examen'});return;}
-  const filled=manualQuestions.filter(q=>q.text.trim()&&q.a&&q.b&&q.c&&q.d&&q.correct);
-  if(filled.length<1){set({err:'Completa al menos una pregunta con opciones y respuesta correcta'});return;}
-  const incomplete=manualQuestions.filter(q=>q.text.trim()&&(!q.a||!q.b||!q.c||!q.d||!q.correct));
-  if(incomplete.length>0){set({err:'Pregunta '+incomplete[0].num+': faltan opciones o respuesta correcta'});return;}
-  const questions=filled.map(q=>({num:q.num,text:q.text.trim(),options:{a:q.a.trim(),b:q.b.trim(),c:q.c.trim(),d:q.d.trim()}}));
-  const answers=Object.fromEntries(filled.map(q=>[String(q.num),q.correct]));
-  set({exam:{title:manualTitle.trim(),questions},answerKey:{answers},err:'',ok:'✓ Examen listo: '+questions.length+' preguntas'});
-}
-
-function buildExamFromPaste(){
-  const{pasteExam,pasteKey}=S;
-  if(!pasteExam.trim()){set({err:'Pega el texto del examen'});return;}
-  if(!pasteKey.trim()){set({err:'Pega las respuestas correctas'});return;}
-  const ep=parseExamText(pasteExam);const kp=parseAnswerKeyText(pasteKey);
-  if(!ep.questions||ep.questions.length===0){set({err:'No se encontraron preguntas. Formato: "1. Pregunta" + "a) Opción"'});return;}
-  if(!kp.answers||Object.keys(kp.answers).length===0){set({err:'Formato respuestas: "1 b)" o "1. b)" o "1: b"'});return;}
-  set({exam:ep,answerKey:kp,err:'',ok:'✓ '+ep.questions.length+' preguntas extraídas'});
-}
-
-
-// ── App State ─────────────────────────────────────────────────────────────
-let S = {
-  view:'landing', savedPin:null, tab:'exam',
-  exam:null, answerKey:null,
-  examActive:false, contentHtml:'', contentActive:false,
-  groups:[], results:[], examHistory:[], groupFilter:'all',
-  processing:false, err:'', ok:'',
-  studentName:'', studentGroup:'', mode:'idle',
-  stuAnswers:{}, submitted:false, myScore:null, pollTimer:null,
-  lastPoll:null, pollCount:0,
-  examInputMode:'manual',
-  manualTitle:'',
-  manualQuestions:Array.from({length:20},(_,i)=>({num:i+1,text:'',a:'',b:'',c:'',d:'',correct:''})),
-  pasteExam:'', pasteKey:'',
-  quizHtml:null, quizActive:false, quizName:'',
-  fbConnected:false
-};
-
-function set(patch){ Object.assign(S,patch); render(); }
-
-// ── DOM helpers ───────────────────────────────────────────────────────────
-function el(tag, attrs, ...kids){
-  const node=document.createElement(tag);
-  if(attrs) for(const [k,v] of Object.entries(attrs)){
-    if(k==='cls') node.className=v;
-    else if(k[0]==='$') node.addEventListener(k.slice(1),v);
-    else if(k==='css'&&typeof v==='object') Object.assign(node.style,v);
-    else if(k==='html') node.innerHTML=v;
-    else if(k==='dis'&&v) node.disabled=true;
-    else if(k!=='dis') node.setAttribute(k,v);
+    });
   }
-  kids.flat().forEach(c=>{ if(c==null||c===false)return; node.appendChild(typeof c==='string'?document.createTextNode(c):c); });
-  return node;
+  return obj;
 }
-function btn(text,cls,onClick,disabled){
-  const b=el('button',{cls,dis:disabled}); b.textContent=text;
-  b.addEventListener('click',onClick); return b;
+
+let _cache = null;
+let _cacheTime = 0;
+
+async function getCache() {
+  const now = Date.now();
+  if (_cache && (now - _cacheTime) < 2000) return _cache;
+  try {
+    _cache = await sheetRead();
+    _cacheTime = now;
+  } catch(e) {
+    if (!_cache) _cache = {};
+  }
+  return _cache;
 }
-function tinp(ph,type,onInput,onEnter){
-  const i=document.createElement('input'); i.type=type||'text'; i.placeholder=ph;
-  i.addEventListener('input',e=>onInput&&onInput(e.target.value));
-  i.addEventListener('keydown',e=>e.key==='Enter'&&onEnter&&onEnter());
-  return i;
+
+function fk(k){ return String(k).replace(/[.#$[\]]/g,'_'); }
+
+async function sGet(k) {
+  try {
+    const data = await getCache();
+    const key = fk(k);
+    // Check for chunked value
+    const nStr = data[key + '__n'];
+    if (nStr && parseInt(nStr) > 1) {
+      let val = '';
+      const n = parseInt(nStr);
+      for (let i = 0; i < n; i++) val += (data[key + '__' + i] || '');
+      return val || null;
+    }
+    const val = data[key];
+    return val !== undefined && val !== '' ? val : null;
+  } catch { return null; }
 }
-function tsel(options,value,onChange){
-  const s=document.createElement('select');
-  options.forEach(([v,l])=>{ const o=document.createElement('option'); o.value=v; o.textContent=l; if(v===value)o.selected=true; s.appendChild(o); });
-  s.addEventListener('change',e=>onChange(e.target.value)); return s;
+
+async function sSet(k, v) {
+  try {
+    _cache = null; // invalidate cache on write
+    const key = fk(k);
+    if (!v || v.length <= CHUNK) {
+      await gasCall({a:'s', k:key, v: v || ''});
+    } else {
+      const chunks = [];
+      for (let i = 0; i < v.length; i += CHUNK) chunks.push(v.slice(i, i+CHUNK));
+      for (let i = 0; i < chunks.length; i++) await gasCall({a:'s', k:key+'__'+i, v:chunks[i]});
+      await gasCall({a:'s', k:key+'__n', v:String(chunks.length)});
+    }
+    return true;
+  } catch { return false; }
 }
-function bdg(text,color){ return el('span',{cls:'badge bg-'+color},text); }
-function lbl(text){ return el('label',{},text); }
+
+async function sDel(k) {
+  try {
+    _cache = null;
+    const key = fk(k);
+    await gasCall({a:'d', k:key});
+    // Also delete chunks if any
+    const data = await getCache();
+    const nStr = data && data[key+'__n'];
+    if (nStr) {
+      const n = parseInt(nStr);
+      for (let i = 0; i < n; i++) await gasCall({a:'d', k:key+'__'+i});
+      await gasCall({a:'d', k:key+'__n'});
+    }
+  } catch {}
+}
+
+async function checkStorage() {
+  if (!SHEET_ID || SHEET_ID.includes('PEGA_AQUI')) {
+    console.warn('SHEET_ID no configurado.');
+    return;
+  }
+  try {
+    // Test read via opensheet
+    const url = 'https://opensheet.elk.sh/' + SHEET_ID + '/' + encodeURIComponent(SHEET_NAME);
+    const r = await fetch(url);
+    if (r.ok) {
+      storageOK = true;
+      // Test write via GAS (fire and forget)
+      gasCall({a:'s', k:'_ping', v:String(Date.now())}).catch(()=>{});
+    } else {
+      console.error('opensheet error:', r.status);
+      storageOK = false;
+    }
+  } catch(e) {
+    console.error('checkStorage error:', e.message);
+    storageOK = false;
+  }
+}
 
 
-// ── Data functions ────────────────────────────────────────────────────────
 async function processExam(examFile, keyFile){
   set({processing:true, err:'', ok:''});
   try{
@@ -515,10 +389,26 @@ async function studentEnter(name,group){
   S.pollTimer=t;
 }
 
+
+async function submitQuizResult(score,total,grade){
+  const{studentName,studentGroup}=S;
+  const subKey=SK.sub(studentName,studentGroup);
+  const sub={name:studentName,group:studentGroup,correctCount:score,grade,
+    details:[],examTitle:S.quizName||'Quiz',isQuiz:true,
+    timestamp:new Date().toISOString(),submitted:true};
+  await sSet(subKey,JSON.stringify(sub));
+  const gRaw=await sGet(SK.idx(studentGroup));const gKeys=gRaw?JSON.parse(gRaw):[];
+  if(!gKeys.includes(subKey)){gKeys.push(subKey);await sSet(SK.idx(studentGroup),JSON.stringify(gKeys));}
+  const aRaw=await sGet(SK.idx('all'));const aKeys=aRaw?JSON.parse(aRaw):[];
+  if(!aKeys.includes(subKey)){aKeys.push(subKey);await sSet(SK.idx('all'),JSON.stringify(aKeys));}
+  if(S.pollTimer)clearInterval(S.pollTimer);
+  set({myScore:{correct:score,grade,details:[]},submitted:true,pollTimer:null});
+}
+
 async function pollStudent(){
   if(!_db){
     await checkStorage();
-    if(!_db){ S.pollCount++; S.lastPoll='sin conexion Firebase'; render(); return; }
+    if(!_db){ S.pollCount++; S.lastPoll='sin conexion al servidor'; render(); return; }
   }
   try{
     const modeRaw = await sGet(SK.mode);
@@ -601,7 +491,7 @@ function renderLanding(){
   const page=el('div',{cls:'page'});
   if(!storageOK){
     const _w=el('div',{css:{background:'#fee2e2',color:'#7f1d1d',padding:'1rem 1.25rem',borderRadius:'10px',fontSize:'13px',marginBottom:'1.5rem',lineHeight:'1.8',border:'1px solid #fca5a5'}});
-    _w.innerHTML='<strong>Firebase no configurado.</strong> Busca <code style="background:#fecaca;padding:2px 5px;border-radius:4px">FB_DB_URL</code> en el HTML y reemplaza con la URL de tu base de datos Firebase.';
+    _w.innerHTML='<strong>Backend no configurado.</strong> Configura SHEET_ID en el HTML con el ID de tu Google Sheet.';
     page.appendChild(_w);
   }
   page.appendChild(el('div',{css:{textAlign:'center',paddingTop:'2rem',marginBottom:'2.5rem'}},
@@ -658,15 +548,15 @@ function renderTeacher(){
   if(S.ok)page.appendChild(el('div',{css:{background:'#EAF3DE',color:'#3B6D11',padding:'10px 14px',borderRadius:'8px',fontSize:'13px',marginBottom:'1rem'}},S.ok));
   if(S.err)page.appendChild(el('div',{css:{background:'#FCEBEB',color:'#A32D2D',padding:'10px 14px',borderRadius:'8px',fontSize:'13px',marginBottom:'1rem'}},S.err));
   const tabs=el('div',{cls:'tabs'});
-  [['exam','📝 Examen'],['content','📄 Contenido'],['quiz','🎮 Quiz HTML'],['groups','👥 Grupos'],['results','📊 Calificaciones']].forEach(([id,label])=>{
+  [['exam','📝 Examen'],['quiz','🎮 Quiz'],['groups','👥 Grupos'],['results','📊 Calificaciones'],['settings','⚙️ Ajustes']].forEach(([id,label])=>{
     tabs.appendChild(btn(label,'tab-btn'+(S.tab===id?' active':''),()=>set({tab:id,err:'',ok:''})));
   });
   page.appendChild(tabs);
   if(S.tab==='exam')page.appendChild(tabExam());
-  if(S.tab==='content')page.appendChild(tabContent());
+  if(S.tab==='quiz')page.appendChild(tabQuiz());
   if(S.tab==='groups')page.appendChild(tabGroups());
   if(S.tab==='results')page.appendChild(tabResults());
-  if(S.tab==='quiz')page.appendChild(tabQuiz());
+  if(S.tab==='settings')page.appendChild(tabSettings());
   return page;
 }
 
@@ -865,7 +755,7 @@ function tabQuiz(){
       const name=qfile.name.replace(/\.html?$/i,'');
       // Write quiz data first, wait for confirmation, then set mode
       const quizOk = await sSet('quiz',JSON.stringify({html:htmlContent,name}));
-      if(!quizOk){ set({err:'Error al guardar el quiz en Firebase. Verifica la conexion.'}); return; }
+      if(!quizOk){ set({err:'Error al guardar el quiz. Verifica que GAS_URL esta configurado.'}); return; }
       await new Promise(r=>setTimeout(r,500));
       await sSet(SK.mode,'quiz');
       set({quizActive:true,quizHtml:htmlContent,quizName:name,examActive:false,contentActive:false,
@@ -939,6 +829,87 @@ function tabContent(){
   return wrap;
 }
 
+
+
+function tabSettings(){
+  const wrap=el('div',{});
+
+  // JSON Export/Import card
+  const jcard=el('div',{cls:'card'});
+  jcard.appendChild(el('h3',{},'Exportar / Importar examen (JSON)'));
+  jcard.appendChild(el('p',{cls:'sub',css:{marginBottom:'1rem'}},'Guarda el examen completo en un archivo JSON para reutilizarlo en otra sesión sin volver a capturarlo.'));
+
+  const btnRow=el('div',{css:{display:'flex',gap:'10px',flexWrap:'wrap',marginBottom:'1rem'}});
+
+  // Export JSON
+  const expBtn=btn('⬇ Exportar JSON','btn-primary',()=>{
+    const{exam,answerKey}=S;
+    if(!exam||!answerKey){set({err:'No hay examen cargado para exportar',tab:'settings'});return;}
+    const bundle=JSON.stringify({version:2,exam,answerKey,exportDate:new Date().toISOString()},null,2);
+    const blob=new Blob([bundle],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=(exam.title||'examen').replace(/[^a-zA-Z0-9_\-\u00e1\u00e9\u00ed\u00f3\u00fa\u00c1\u00c9\u00cd\u00d3\u00da\u00f1\u00d1 ]/g,'_')+'.json';
+    a.click(); URL.revokeObjectURL(a.href);
+    set({ok:'Examen exportado como JSON',tab:'settings'});
+  });
+  btnRow.appendChild(expBtn);
+
+  // Import JSON
+  const impFile=el('input',{type:'file',accept:'.json'});
+  impFile.style.display='none';
+  impFile.addEventListener('change',e=>{
+    const file=e.target.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const bundle=JSON.parse(ev.target.result);
+        if(!bundle.exam||!bundle.answerKey) throw new Error('Archivo inválido: falta exam o answerKey');
+        if(!bundle.exam.questions||!bundle.exam.questions.length) throw new Error('El archivo no contiene preguntas');
+        const mq=Array.from({length:20},(_,i)=>({num:i+1,text:'',a:'',b:'',c:'',d:'',correct:''}));
+        bundle.exam.questions.forEach(q=>{
+          const idx=q.num-1;
+          if(idx>=0&&idx<20){
+            mq[idx].text=q.text||''; mq[idx].a=q.options?.a||''; mq[idx].b=q.options?.b||'';
+            mq[idx].c=q.options?.c||''; mq[idx].d=q.options?.d||'';
+            mq[idx].correct=(bundle.answerKey.answers||{})[String(q.num)]||'';
+          }
+        });
+        set({exam:bundle.exam,answerKey:bundle.answerKey,manualTitle:bundle.exam.title||'',
+          manualQuestions:mq,ok:'✓ Importado: "'+bundle.exam.title+'" — '+bundle.exam.questions.length+' preguntas',
+          err:'',tab:'settings'});
+      }catch(err){ set({err:'Error al importar: '+err.message,tab:'settings'}); }
+    };
+    reader.readAsText(file,'UTF-8');
+    impFile.value='';
+  });
+  const impBtn=btn('⬆ Importar JSON','btn-ghost',()=>impFile.click());
+  btnRow.appendChild(impBtn);
+  btnRow.appendChild(impFile);
+  jcard.appendChild(btnRow);
+
+  if(S.exam){
+    const info=el('div',{css:{background:'var(--color-background-secondary)',borderRadius:'8px',padding:'10px 14px',fontSize:'13px',color:'var(--color-text-secondary)'}});
+    info.textContent='Examen cargado: "'+S.exam.title+'" — '+(S.exam.questions||[]).length+' preguntas';
+    jcard.appendChild(info);
+  }
+  wrap.appendChild(jcard);
+
+  // App info card
+  const acard=el('div',{cls:'card'});
+  acard.appendChild(el('h3',{},'Información'));
+  const rows=[['URL del aula','https://mandrake210.github.io/aula-virtual'],
+    ['Backend','Google Apps Script'],
+    ['Versión','2.0 — GitHub Pages + Google Apps Script']];
+  rows.forEach(([k,v])=>{
+    const row=el('div',{css:{display:'flex',gap:'12px',padding:'8px 0',borderBottom:'0.5px solid var(--color-border-tertiary)',fontSize:'13px'}});
+    row.appendChild(el('div',{css:{color:'var(--color-text-secondary)',minWidth:'120px'}},k));
+    row.appendChild(el('div',{css:{fontFamily:'var(--font-mono)',fontSize:'12px',wordBreak:'break-all'}},v));
+    acard.appendChild(row);
+  });
+  wrap.appendChild(acard);
+  return wrap;
+}
 
 function tabGroups(){
   const wrap=el('div',{});
@@ -1099,7 +1070,7 @@ function renderStudentEntry(){
   card.appendChild(el('h2',{},'Entrar al Aula'));
   if(!storageOK){
     card.appendChild(el('div',{css:{background:'#FAEEDA',color:'#854F0B',padding:'10px 14px',borderRadius:'8px',fontSize:'13px',marginBottom:'1rem'}},
-      'Firebase no configurado. Contacta al maestro.'));
+      'Backend no configurado. Contacta al maestro.'));
   }
   card.appendChild(el('label',{},'Tu nombre completo'));
   let nv='',gv='';
@@ -1153,17 +1124,17 @@ function renderStudent(){
     w.appendChild(el('div',{css:{fontSize:'18px',fontWeight:'500',marginBottom:'4px'}},'Hola, '+studentName));
     w.appendChild(el('div',{css:{fontSize:'13px',color:'var(--color-text-secondary)',marginBottom:'1.5rem'}},studentGroup));
 
-    // Firebase status badge
+    // Connection status badge
     const fbBadge=el('div',{css:{display:'inline-block',padding:'5px 14px',borderRadius:'20px',fontSize:'12px',fontWeight:'500',marginBottom:'1.5rem',
       background:S.fbConnected?'#EAF3DE':'#FCEBEB',color:S.fbConnected?'#3B6D11':'#A32D2D'}});
     fbBadge.textContent = S.fbConnected
       ? 'Conectado — esperando actividad del maestro'
-      : (pollCount===0 ? 'Conectando a Firebase...' : 'Sin conexion Firebase — reintentando...');
+      : (pollCount===0 ? 'Conectando...' : 'Sin conexion al servidor — reintentando...');
     w.appendChild(fbBadge);
 
     if(!S.fbConnected && pollCount>2){
       const errBox=el('div',{css:{background:'#FCEBEB',color:'#A32D2D',padding:'10px 14px',borderRadius:'8px',fontSize:'12px',marginBottom:'1rem',maxWidth:'400px',margin:'0 auto 1rem',textAlign:'left'}});
-      errBox.innerHTML='<strong>Problema de conexion:</strong><br>1. Verifica que la pagina sea <strong>https://mandrake210.github.io/aula-virtual</strong><br>2. Revisa las reglas de Firebase (read y write = true)<br>3. Ultima respuesta: <code>'+S.lastPoll+'</code>';
+      errBox.innerHTML='<strong>Problema de conexion:</strong><br>1. Verifica que la pagina sea <strong>https://mandrake210.github.io/aula-virtual</strong><br>2. Verifica que GAS_URL esta bien configurado y desplegado<br>3. Ultima respuesta: <code>'+S.lastPoll+'</code>';
       w.appendChild(errBox);
     }
 
@@ -1191,19 +1162,84 @@ function renderStudent(){
 
   // Quiz view
   if(S.quizActive&&S.quizHtml){
-    const blob=new Blob([S.quizHtml],{type:'text/html'});
-    const url=URL.createObjectURL(blob);
-    const frame=document.createElement('iframe');
-    frame.src=url; frame.style.cssText='width:100%;height:90vh;border:none;border-radius:12px';
-    frame.onload=()=>URL.revokeObjectURL(url);
-    page.appendChild(el('div',{css:{marginBottom:'8px',display:'flex',justifyContent:'space-between',alignItems:'center'}},
-      el('h1',{},S.quizName||'Quiz'),
-      el('div',{css:{fontSize:'11px',color:'var(--color-text-secondary)'}},'Se actualiza cada 2s')
+    var injectStyle = '<style>'
+      + 'html,body{margin:0!important;padding:8px!important;background:#1b3358!important;min-height:unset!important;height:auto!important}'
+      + '.game-container{max-width:100%!important;border-radius:16px!important;padding:16px!important}'
+      + '.pregunta-texto{font-size:1.1rem!important;padding:12px 16px!important}'
+      + '.opcion-btn{font-size:1rem!important;padding:10px 14px!important}'
+      + '.opcion-letra{width:42px!important;height:42px!important;font-size:1.4rem!important}'
+      + '.titulo-juego h1{font-size:1.4rem!important}'
+      + '.btn-siguiente{font-size:1.4rem!important;padding:14px 24px!important}'
+      + '#_enviar_btn{display:none;width:100%;margin-top:16px;padding:18px;font-size:1.4rem;font-weight:700;background:#3B6D11;color:white;border:none;border-radius:50px;cursor:pointer;border:4px solid white;box-shadow:0 8px 0 #1a3a07}'
+      + '#_enviar_btn.visible{display:block}'
+      + '<\/style>';
+
+    var injectScript = '<scr'+'ipt>'
+      + 'window.addEventListener("load",function(){'
+      +   'var t=setInterval(function(){'
+      +     'var b=document.getElementById("reiniciarBtn");'
+      +     'if(b){'
+      +       'clearInterval(t);'
+      +       'b.textContent="Finalizar";'
+      +       'b.style.background="#e63946";'
+      +       'b.style.boxShadow="0 12px 0 #8f1a22";'
+      +       'b.addEventListener("click",function(e){'
+      +         'e.stopImmediatePropagation();'
+      +         'var pts=document.getElementById("puntosValor");'
+      +         'var score=pts?parseInt(pts.textContent)||0:0;'
+      +         'document.getElementById("_enviar_btn").classList.add("visible");'
+      +         'document.getElementById("_score_data").value=JSON.stringify({score:score,total:30});'
+      +       '},{capture:true});'
+      +     '}'
+      +   '},300);'
+      + '});'
+      + 'document.addEventListener("DOMContentLoaded",function(){'
+      +   'document.getElementById("_enviar_btn").addEventListener("click",function(){'
+      +     'var raw=document.getElementById("_score_data").value||"{}";'
+      +     'var d=JSON.parse(raw);'
+      +     'window.parent.postMessage({type:"quiz_done",score:d.score||0,total:d.total||30},"*");'
+      +   '});'
+      + '});'
+      + '<\/sc'+'ript>';
+
+    var sendBtn = '<input type="hidden" id="_score_data" value="{}">'
+      + '<button id="_enviar_btn">Enviar resultados al maestro<\/button>';
+
+    var quizWithInject = S.quizHtml
+      .replace('<\/head>', injectStyle + injectScript + '<\/head>')
+      .replace('<\/body>', sendBtn + '<\/body>');
+
+    var blob = new Blob([quizWithInject], {type:'text/html'});
+    var url  = URL.createObjectURL(blob);
+    var frame = document.createElement('iframe');
+    frame.src = url;
+    frame.style.cssText = 'width:100%;border:none;border-radius:12px;min-height:600px;display:block';
+    frame.setAttribute('scrolling','yes');
+    frame.onload = function(){
+      URL.revokeObjectURL(url);
+      try{
+        var resize = function(){
+          var h = frame.contentDocument.body.scrollHeight;
+          if(h > 300) frame.style.height = (h+40) + 'px';
+        };
+        resize();
+        frame.contentDocument.addEventListener('click', function(){ setTimeout(resize,400); });
+      }catch(e){}
+    };
+
+    window.onmessage = function(ev){
+      if(ev.data && ev.data.type === 'quiz_done'){
+        submitQuizResult(ev.data.score||0, ev.data.total||30,
+          Math.trunc((ev.data.score||0)/(ev.data.total||30)*100)/10);
+      }
+    };
+
+    page.appendChild(el('div',{css:{marginBottom:'8px',display:'flex',alignItems:'center'}},
+      el('h1',{},S.quizName||'Quiz')
     ));
     page.appendChild(frame);
     return page;
   }
-
   // Waiting for quiz data
   if(S.quizActive&&!S.quizHtml){
     const w=el('div',{css:{textAlign:'center',padding:'4rem 1rem'}});
