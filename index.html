@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aula Virtual</title>
-<script src="https://cdn.jsdelivr.net/npm/firebase@8.10.1/firebase-app.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/firebase@8.10.1/firebase-database.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
@@ -98,37 +96,47 @@ const SK = {
 
 const COLORS = ['#185FA5','#3B6D11','#854F0B','#534AB7','#993556','#0F6E56','#993C1D'];
 
-// ── Storage — local server API ──────────────────────────────────────────
-// ── Firebase Realtime Database v8 ────────────────────────────────────────
-// EDITA AQUI: pega la URL de tu Firebase Realtime Database
+// ── Firebase REST API (sin SDK, sin CDN) ─────────────────────────────────
 const FB_DB_URL = "https://mi-aula-10abe-default-rtdb.firebaseio.com";
 
-let _db = null;
 let storageOK = false;
 
-function fk(k){ return 'av/' + String(k).replace(/[.#$\[\]]/g,'_'); }
+function fk(k){ return 'av/' + String(k).replace(/[.#$[\]]/g,'_'); }
 
 async function sGet(k){
-  if(!_db) return null;
-  try{ const snap=await _db.ref(fk(k)).once('value'); return snap.exists()?snap.val():null; }
-  catch{ return null; }
+  try{
+    const r = await fetch(FB_DB_URL + '/' + fk(k) + '.json');
+    if(!r.ok) return null;
+    const v = await r.json();
+    return v === null ? null : (typeof v === 'string' ? v : JSON.stringify(v));
+  }catch{ return null; }
 }
 async function sSet(k,v){
-  if(!_db) return false;
-  try{ await _db.ref(fk(k)).set(v); return true; }catch{ return false; }
+  try{
+    const r = await fetch(FB_DB_URL + '/' + fk(k) + '.json', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(v)
+    });
+    return r.ok;
+  }catch{ return false; }
 }
 async function sDel(k){
-  if(!_db) return;
-  try{ await _db.ref(fk(k)).remove(); }catch{}
+  try{ await fetch(FB_DB_URL + '/' + fk(k) + '.json', {method:'DELETE'}); }catch{}
 }
 async function checkStorage(){
-  if(!FB_DB_URL||FB_DB_URL.includes('PEGA_AQUI')){ return; }
   try{
-    if(!firebase.apps.length) firebase.initializeApp({databaseURL:FB_DB_URL});
-    _db=firebase.database();
-    await _db.ref('_ping').set(Date.now());
-    storageOK=true;
-  }catch(e){ storageOK=false; console.error('Firebase:',e.message); }
+    const r = await fetch(FB_DB_URL + '/av/_ping.json', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(Date.now())
+    });
+    storageOK = r.ok;
+    if(!r.ok) console.error('Firebase REST error:', r.status);
+  }catch(e){
+    storageOK = false;
+    console.error('Firebase REST error:', e.message);
+  }
 }
 
 // ── DOCX reader ───────────────────────────────────────────────────────────
@@ -516,9 +524,9 @@ async function studentEnter(name,group){
 }
 
 async function pollStudent(){
-  if(!_db){
+  if(!storageOK){
     await checkStorage();
-    if(!_db){ S.pollCount++; S.lastPoll='sin conexion Firebase'; render(); return; }
+    if(!storageOK){ S.pollCount++; S.lastPoll='sin conexion'; render(); return; }
   }
   try{
     const modeRaw = await sGet(SK.mode);
