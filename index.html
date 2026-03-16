@@ -96,7 +96,7 @@ const SK = {
 
 const COLORS = ['#185FA5','#3B6D11','#854F0B','#534AB7','#993556','#0F6E56','#993C1D'];
 
-// ── Firebase REST API (sin SDK, sin CDN) ─────────────────────────────────
+// ── Firebase REST API (sin SDK, funciona en cualquier red) ───────────────
 const FB_DB_URL = "https://mi-aula-10abe-default-rtdb.firebaseio.com";
 
 let storageOK = false;
@@ -111,11 +111,11 @@ async function sGet(k){
     return v === null ? null : (typeof v === 'string' ? v : JSON.stringify(v));
   }catch{ return null; }
 }
-async function sSet(k,v){
+async function sSet(k, v){
   try{
     const r = await fetch(FB_DB_URL + '/' + fk(k) + '.json', {
-      method:'PUT',
-      headers:{'Content-Type':'application/json'},
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(v)
     });
     return r.ok;
@@ -127,16 +127,12 @@ async function sDel(k){
 async function checkStorage(){
   try{
     const r = await fetch(FB_DB_URL + '/av/_ping.json', {
-      method:'PUT',
-      headers:{'Content-Type':'application/json'},
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(Date.now())
     });
     storageOK = r.ok;
-    if(!r.ok) console.error('Firebase REST error:', r.status);
-  }catch(e){
-    storageOK = false;
-    console.error('Firebase REST error:', e.message);
-  }
+  }catch(e){ storageOK = false; console.error('Firebase REST:', e.message); }
 }
 
 // ── DOCX reader ───────────────────────────────────────────────────────────
@@ -655,23 +651,23 @@ function renderTeacher(){
   hl.appendChild(el('h1',{},'Panel del Maestro'));
   const sr=el('div',{css:{marginTop:'4px'}});
   if(S.examActive)sr.appendChild(el('span',{css:{display:'inline-block',padding:'3px 10px',borderRadius:'6px',fontSize:'12px',fontWeight:'500',background:'#EAF3DE',color:'#3B6D11'}},'Examen activo'));
-  else if(S.contentActive)sr.appendChild(el('span',{css:{display:'inline-block',padding:'3px 10px',borderRadius:'6px',fontSize:'12px',fontWeight:'500',background:'#E6F1FB',color:'#185FA5'}},'Contenido activo'));
+
   else if(S.quizActive)sr.appendChild(el('span',{css:{display:'inline-block',padding:'3px 10px',borderRadius:'6px',fontSize:'12px',fontWeight:'500',background:'#FAEEDA',color:'#854F0B'}},'Quiz activo'));
   else sr.appendChild(el('span',{css:{display:'inline-block',padding:'3px 10px',borderRadius:'6px',fontSize:'12px',fontWeight:'500',background:'#F1EFE8',color:'#5F5E5A'}},'Sin actividad'));
   hl.appendChild(sr);hdr.appendChild(hl);
   const hr=el('div',{css:{display:'flex',gap:'8px'}});
-  if(S.examActive||S.contentActive||S.quizActive)hr.appendChild(btn('Detener todo','btn-danger',deactivate));
+  if(S.examActive||S.quizActive)hr.appendChild(btn('Detener todo','btn-danger',deactivate));
   hr.appendChild(btn('Salir','btn-ghost',()=>{if(S.pollTimer)clearInterval(S.pollTimer);set({view:'landing',err:'',ok:''});}));
   hdr.appendChild(hr);page.appendChild(hdr);
   if(S.ok)page.appendChild(el('div',{css:{background:'#EAF3DE',color:'#3B6D11',padding:'10px 14px',borderRadius:'8px',fontSize:'13px',marginBottom:'1rem'}},S.ok));
   if(S.err)page.appendChild(el('div',{css:{background:'#FCEBEB',color:'#A32D2D',padding:'10px 14px',borderRadius:'8px',fontSize:'13px',marginBottom:'1rem'}},S.err));
   const tabs=el('div',{cls:'tabs'});
-  [['exam','📝 Examen'],['content','📄 Contenido'],['quiz','🎮 Quiz HTML'],['groups','👥 Grupos'],['results','📊 Calificaciones']].forEach(([id,label])=>{
+  [['exam','📝 Examen'],['quiz','🎮 Quiz HTML'],['groups','👥 Grupos'],['results','📊 Calificaciones'],['settings','⚙️ Ajustes']].forEach(([id,label])=>{
     tabs.appendChild(btn(label,'tab-btn'+(S.tab===id?' active':''),()=>set({tab:id,err:'',ok:''})));
   });
   page.appendChild(tabs);
   if(S.tab==='exam')page.appendChild(tabExam());
-  if(S.tab==='content')page.appendChild(tabContent());
+  if(S.tab==='settings')page.appendChild(tabSettings());
   if(S.tab==='groups')page.appendChild(tabGroups());
   if(S.tab==='results')page.appendChild(tabResults());
   if(S.tab==='quiz')page.appendChild(tabQuiz());
@@ -948,6 +944,57 @@ function tabContent(){
 }
 
 
+
+function tabSettings(){
+  const wrap=el('div',{});
+  const jcard=el('div',{cls:'card'});
+  jcard.appendChild(el('h3',{},'Exportar / Importar examen (JSON)'));
+  jcard.appendChild(el('p',{cls:'sub',css:{marginBottom:'1rem'}},'Guarda el examen en un archivo JSON para reutilizarlo sin capturarlo de nuevo.'));
+  const brow=el('div',{css:{display:'flex',gap:'10px',flexWrap:'wrap',marginBottom:'1rem'}});
+  // Export
+  const expBtn=btn('⬇ Exportar JSON','btn-primary',()=>{
+    const{exam,answerKey}=S;
+    if(!exam||!answerKey){set({err:'No hay examen cargado',tab:'settings'});return;}
+    const blob=new Blob([JSON.stringify({version:2,exam,answerKey,exportDate:new Date().toISOString()},null,2)],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=(exam.title||'examen').replace(/[^a-zA-Z0-9_\-\u00e1\u00e9\u00ed\u00f3\u00fa\u00c1\u00c9\u00cd\u00d3\u00da\u00f1\u00d1 ]/g,'_')+'.json';
+    a.click();URL.revokeObjectURL(a.href);
+    set({ok:'Examen exportado',tab:'settings'});
+  });
+  brow.appendChild(expBtn);
+  // Import
+  const impFile=el('input',{type:'file',accept:'.json'});impFile.style.display='none';
+  impFile.addEventListener('change',e=>{
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const b=JSON.parse(ev.target.result);
+        if(!b.exam||!b.answerKey)throw new Error('Archivo inválido');
+        if(!b.exam.questions||!b.exam.questions.length)throw new Error('Sin preguntas');
+        const mq=Array.from({length:20},(_,i)=>({num:i+1,text:'',a:'',b:'',c:'',d:'',correct:''}));
+        b.exam.questions.forEach(q=>{
+          const idx=q.num-1;
+          if(idx>=0&&idx<20){mq[idx].text=q.text||'';mq[idx].a=q.options?.a||'';mq[idx].b=q.options?.b||'';mq[idx].c=q.options?.c||'';mq[idx].d=q.options?.d||'';mq[idx].correct=(b.answerKey.answers||{})[String(q.num)]||'';}
+        });
+        set({exam:b.exam,answerKey:b.answerKey,manualTitle:b.exam.title||'',manualQuestions:mq,
+          ok:'✓ Importado: "'+b.exam.title+'" — '+b.exam.questions.length+' preguntas',err:'',tab:'settings'});
+      }catch(err){set({err:'Error al importar: '+err.message,tab:'settings'});}
+    };
+    reader.readAsText(file,'UTF-8');impFile.value='';
+  });
+  const impBtn=btn('⬆ Importar JSON','btn-ghost',()=>impFile.click());
+  brow.appendChild(impBtn);brow.appendChild(impFile);
+  jcard.appendChild(brow);
+  if(S.exam){
+    jcard.appendChild(el('div',{css:{background:'var(--color-background-secondary)',borderRadius:'8px',padding:'10px 14px',fontSize:'13px',color:'var(--color-text-secondary)'}},
+      'Examen cargado: "'+S.exam.title+'" — '+(S.exam.questions||[]).length+' preguntas'));
+  }
+  wrap.appendChild(jcard);
+  return wrap;
+}
+
 function tabGroups(){
   const wrap=el('div',{});
   const gc=el('div',{cls:'card'});
@@ -1075,21 +1122,45 @@ function tabResults(){
 
   if(groupFilter==='all'&&groups.length>1){
     const cmp=el('div',{cls:'card'});
-    cmp.appendChild(el('h3',{},'Comparativo por grupo'));
-    const cgrid=el('div',{css:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(190px,1fr))',gap:'12px',marginTop:'8px'}});
+    cmp.appendChild(el('h3',{},'Reporte por grupo'));
     groups.forEach(g=>{
-      const gRes=results.filter(r=>r.group===g.name); if(!gRes.length) return;
+      const gRes=[...results].filter(r=>r.group===g.name); if(!gRes.length) return;
+      gRes.sort((a,b)=>b.grade-a.grade);
       const gAvg=Math.trunc((gRes.reduce((a,b)=>a+b.grade,0)/gRes.length)*10)/10;
-      const mc=el('div',{css:{padding:'1rem',borderRadius:'8px',background:'var(--color-background-secondary)'}});
-      const top=el('div',{css:{display:'flex',alignItems:'center',marginBottom:'8px'}});
-      top.appendChild(el('span',{cls:'color-dot',css:{background:g.color,marginRight:'8px',width:'10px',height:'10px'}}));
-      top.appendChild(el('span',{css:{fontWeight:'500',fontSize:'13px'}},g.name));
-      mc.appendChild(top);
-      mc.appendChild(el('div',{css:{fontSize:'22px',fontWeight:'500',color:gAvg>=6?'#3B6D11':'#A32D2D'}},gAvg.toFixed(1)));
-      mc.appendChild(el('div',{css:{fontSize:'12px',color:'var(--color-text-secondary)',marginTop:'2px'}},`${gRes.length} alumnos · ${gRes.filter(r=>r.grade>=6).length} aprobados`));
-      cgrid.appendChild(mc);
+      const gApp=gRes.filter(r=>r.grade>=6).length;
+      const gHigh=Math.max(...gRes.map(r=>r.grade));
+      const gLow=Math.min(...gRes.map(r=>r.grade));
+      // Group header
+      const ghdr=el('div',{css:{display:'flex',alignItems:'center',gap:'10px',padding:'10px 0',borderBottom:'0.5px solid var(--color-border-tertiary)',marginBottom:'8px',flexWrap:'wrap'}});
+      ghdr.appendChild(el('span',{cls:'color-dot',css:{background:g.color,width:'11px',height:'11px'}}));
+      ghdr.appendChild(el('span',{css:{fontWeight:'500',fontSize:'14px'}},g.name));
+      const gStats=el('div',{css:{display:'flex',gap:'12px',marginLeft:'auto',flexWrap:'wrap'}});
+      [['Promedio',gAvg.toFixed(1)],['Aprobados',gApp+'/'+gRes.length],['Más alta',gHigh.toFixed(1)],['Más baja',gLow.toFixed(1)]].forEach(([l,v])=>{
+        const ms=el('div',{css:{textAlign:'center'}});
+        ms.appendChild(el('div',{css:{fontSize:'11px',color:'var(--color-text-secondary)'}},l));
+        ms.appendChild(el('div',{css:{fontSize:'15px',fontWeight:'500',color:l==='Promedio'?(gAvg>=6?'#3B6D11':'#A32D2D'):'var(--color-text-primary)'}},v));
+        gStats.appendChild(ms);
+      });
+      ghdr.appendChild(gStats);
+      cmp.appendChild(ghdr);
+      // Group table
+      const gt=el('table',{css:{marginBottom:'1rem'}});
+      const gth=el('thead',{});const gtr=el('tr',{});
+      ['#','Alumno','Aciertos','Calificación','Estado'].forEach(h=>gtr.appendChild(el('th',{},h)));
+      gth.appendChild(gtr);gt.appendChild(gth);
+      const gtb=el('tbody',{});
+      gRes.forEach((r,i)=>{
+        const row=el('tr',{});
+        row.appendChild(el('td',{css:{color:'var(--color-text-secondary)',fontSize:'12px'}},String(i+1)));
+        row.appendChild(el('td',{css:{fontWeight:'500'}},r.name));
+        row.appendChild(el('td',{css:{color:'var(--color-text-secondary)'}},r.correctCount+'/20'));
+        row.appendChild(el('td',{css:{fontWeight:'500',fontSize:'14px',color:r.grade>=6?'#3B6D11':'#A32D2D'}},r.grade.toFixed(1)));
+        const std=el('td',{});std.appendChild(bdg(r.grade>=6?'Aprobado':'Reprobado',r.grade>=6?'green':'red'));
+        row.appendChild(std);gtb.appendChild(row);
+      });
+      gt.appendChild(gtb);cmp.appendChild(gt);
     });
-    cmp.appendChild(cgrid); wrap.appendChild(cmp);
+    wrap.appendChild(cmp);
   }
   return wrap;
 }
