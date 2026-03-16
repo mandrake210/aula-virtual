@@ -324,7 +324,8 @@ let S = {
   manualTitle:'',
   manualQuestions:Array.from({length:20},(_,i)=>({num:i+1,text:'',a:'',b:'',c:'',d:'',correct:''})),
   pasteExam:'', pasteKey:'',
-  quizHtml:null, quizActive:false, quizName:''
+  quizHtml:null, quizActive:false, quizName:'',
+  fbConnected:false
 };
 
 function set(patch){ Object.assign(S,patch); render(); }
@@ -515,44 +516,36 @@ async function studentEnter(name,group){
 }
 
 async function pollStudent(){
+  // If Firebase not ready yet, try to reconnect first
+  if(!_db){
+    await checkStorage();
+    if(!_db){ S.pollCount++; S.lastPoll='sin conexion Firebase'; render(); return; }
+  }
   try{
-    const mode=(await sGet(SK.mode))||'idle';
-    const now=new Date().toLocaleTimeString('es-MX');
-    const patch={mode,lastPoll:now,pollCount:S.pollCount+1};
+    const modeRaw = await sGet(SK.mode);
+    const mode = modeRaw || 'idle';
+    const now = new Date().toLocaleTimeString('es-MX');
+    const patch = {mode, lastPoll:now, pollCount:S.pollCount+1, fbConnected:true};
 
     if(mode==='exam'){
-      patch.examActive=true;
-      patch.contentActive=false;
-      // Always re-fetch exam data
+      patch.examActive=true; patch.contentActive=false; patch.quizActive=false;
       const r=await sGet(SK.exam);
-      if(r){
-        try{patch.exam=JSON.parse(r);}catch{patch.exam=S.exam;}
-      } else {
-        patch.exam=S.exam; // keep whatever we have while waiting
-      }
+      if(r){ try{patch.exam=JSON.parse(r);}catch{patch.exam=S.exam;} }
+      else{ patch.exam=S.exam; }
     } else if(mode==='content'){
       const r=await sGet(SK.content);
-      if(r)patch.contentHtml=JSON.parse(r).html;
-      patch.contentActive=true;
-      patch.examActive=false;
-      patch.exam=null;
-      patch.quizActive=false;
+      if(r) patch.contentHtml=JSON.parse(r).html;
+      patch.contentActive=true; patch.examActive=false; patch.exam=null; patch.quizActive=false;
     } else if(mode==='quiz'){
       const r=await sGet('quiz');
-      if(r){const d=JSON.parse(r);patch.quizHtml=d.html;patch.quizName=d.name||'Quiz';}
-      patch.quizActive=true;
-      patch.examActive=false;
-      patch.contentActive=false;
-      patch.exam=null;
+      if(r){ try{const d=JSON.parse(r);patch.quizHtml=d.html;patch.quizName=d.name||'Quiz';}catch{} }
+      patch.quizActive=true; patch.examActive=false; patch.contentActive=false; patch.exam=null;
     } else {
-      patch.examActive=false;
-      patch.contentActive=false;
-      patch.exam=null;
-      patch.quizActive=false;
+      patch.examActive=false; patch.contentActive=false; patch.exam=null; patch.quizActive=false;
     }
     set(patch);
   }catch(e){
-    S.pollCount++;S.lastPoll='err';
+    S.pollCount++; S.lastPoll='error: '+e.message; S.fbConnected=false; render();
   }
 }
 
@@ -854,8 +847,10 @@ function tabQuiz(){
     reader.onload=async ev=>{
       const htmlContent=ev.target.result;
       const name=qfile.name.replace(/\.html?$/i,'');
-      await sSet('quiz',JSON.stringify({html:htmlContent,name}));
-      await new Promise(r=>setTimeout(r,200));
+      // Write quiz data first, wait for confirmation, then set mode
+      const quizOk = await sSet('quiz',JSON.stringify({html:htmlContent,name}));
+      if(!quizOk){ set({err:'Error al guardar el quiz en Firebase. Verifica la conexion.'}); return; }
+      await new Promise(r=>setTimeout(r,500));
       await sSet(SK.mode,'quiz');
       set({quizActive:true,quizHtml:htmlContent,quizName:name,examActive:false,contentActive:false,
         ok:'Quiz "'+name+'" activo — los alumnos ya pueden verlo'});
@@ -1136,21 +1131,33 @@ function renderStudent(){
   }
 
   // Waiting screen
-  if(!examActive&&!contentActive){
-    const w=el('div',{css:{textAlign:'center',padding:'4rem 1rem'}});
+  if(!examActive&&!contentActive&&!S.quizActive){
+    const w=el('div',{css:{textAlign:'center',padding:'3rem 1rem'}});
     w.appendChild(el('div',{css:{fontSize:'42px',marginBottom:'1rem'},html:'&#8987;'}));
     w.appendChild(el('div',{css:{fontSize:'18px',fontWeight:'500',marginBottom:'4px'}},'Hola, '+studentName));
     w.appendChild(el('div',{css:{fontSize:'13px',color:'var(--color-text-secondary)',marginBottom:'1.5rem'}},studentGroup));
-    w.appendChild(el('div',{css:{color:'var(--color-text-secondary)',fontSize:'14px',marginBottom:'1.5rem'}},'Esperando que el maestro inicie una actividad…'));
+
+    // Firebase status badge
+    const fbBadge=el('div',{css:{display:'inline-block',padding:'5px 14px',borderRadius:'20px',fontSize:'12px',fontWeight:'500',marginBottom:'1.5rem',
+      background:S.fbConnected?'#EAF3DE':'#FCEBEB',color:S.fbConnected?'#3B6D11':'#A32D2D'}});
+    fbBadge.textContent = S.fbConnected
+      ? 'Conectado — esperando actividad del maestro'
+      : (pollCount===0 ? 'Conectando a Firebase...' : 'Sin conexion Firebase — reintentando...');
+    w.appendChild(fbBadge);
+
+    if(!S.fbConnected && pollCount>2){
+      const errBox=el('div',{css:{background:'#FCEBEB',color:'#A32D2D',padding:'10px 14px',borderRadius:'8px',fontSize:'12px',marginBottom:'1rem',maxWidth:'400px',margin:'0 auto 1rem',textAlign:'left'}});
+      errBox.innerHTML='<strong>Problema de conexion:</strong><br>1. Verifica que la pagina sea <strong>https://mandrake210.github.io/aula-virtual</strong><br>2. Revisa las reglas de Firebase (read y write = true)<br>3. Ultima respuesta: <code>'+S.lastPoll+'</code>';
+      w.appendChild(errBox);
+    }
+
+    w.appendChild(el('div',{css:{color:'var(--color-text-secondary)',fontSize:'14px',marginBottom:'1.5rem'}},
+      S.fbConnected?'Esperando que el maestro inicie una actividad…':'Intentando conectar...'));
     const rfBtn=btn('↻ Actualizar ahora','btn-ghost',async()=>{ await pollStudent(); });
     rfBtn.style.cssText='font-size:12px;padding:6px 14px;margin-bottom:.75rem';
     w.appendChild(rfBtn);
-    if(pollCount>0&&lastPoll){
-      w.appendChild(el('div',{css:{fontSize:'11px',color:'var(--color-text-secondary)',opacity:'0.6'}},
-        'Actualización automática cada 2s · Última: '+lastPoll+' (#'+pollCount+')'));
-    }else{
-      w.appendChild(el('div',{css:{fontSize:'11px',color:'var(--color-text-secondary)',opacity:'0.6'}},'Iniciando conexión…'));
-    }
+    w.appendChild(el('div',{css:{fontSize:'11px',color:'var(--color-text-secondary)',opacity:'0.5',marginTop:'.5rem'}},
+      pollCount>0?('Revision #'+pollCount+' — '+lastPoll):'Iniciando...'));
     page.appendChild(w);return page;
   }
 
