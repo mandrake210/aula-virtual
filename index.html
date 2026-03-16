@@ -516,7 +516,6 @@ async function studentEnter(name,group){
 }
 
 async function pollStudent(){
-  // If Firebase not ready yet, try to reconnect first
   if(!_db){
     await checkStorage();
     if(!_db){ S.pollCount++; S.lastPoll='sin conexion Firebase'; render(); return; }
@@ -524,9 +523,26 @@ async function pollStudent(){
   try{
     const modeRaw = await sGet(SK.mode);
     const mode = modeRaw || 'idle';
-    const now = new Date().toLocaleTimeString('es-MX');
-    const patch = {mode, lastPoll:now, pollCount:S.pollCount+1, fbConnected:true};
+    S.pollCount++; S.lastPoll=new Date().toLocaleTimeString('es-MX'); S.fbConnected=true;
 
+    // --- NO re-render if already showing exam and mode hasn't changed ---
+    if(mode==='exam' && S.examActive && S.exam){
+      S.mode=mode; return; // alumno ya tiene el examen, no tocar el DOM
+    }
+    if(mode==='quiz' && S.quizActive && S.quizHtml){
+      S.mode=mode; return; // alumno ya ve el quiz, no tocar el DOM
+    }
+    if(mode==='content' && S.contentActive && S.contentHtml){
+      S.mode=mode; return; // alumno ya ve el contenido, no tocar el DOM
+    }
+    if(mode==='idle' && !S.examActive && !S.contentActive && !S.quizActive){
+      // Solo actualizar el contador sin re-renderizar si ya estaba en espera
+      const waitEl=document.querySelector('[data-poll-count]');
+      if(waitEl){ waitEl.textContent='Revision #'+S.pollCount+' — '+S.lastPoll; return; }
+    }
+
+    // Mode changed or first load — full update + re-render
+    const patch={mode, fbConnected:true};
     if(mode==='exam'){
       patch.examActive=true; patch.contentActive=false; patch.quizActive=false;
       const r=await sGet(SK.exam);
@@ -545,7 +561,7 @@ async function pollStudent(){
     }
     set(patch);
   }catch(e){
-    S.pollCount++; S.lastPoll='error: '+e.message; S.fbConnected=false; render();
+    S.pollCount++; S.lastPoll='error: '+e.message; S.fbConnected=false;
   }
 }
 
@@ -1156,8 +1172,10 @@ function renderStudent(){
     const rfBtn=btn('↻ Actualizar ahora','btn-ghost',async()=>{ await pollStudent(); });
     rfBtn.style.cssText='font-size:12px;padding:6px 14px;margin-bottom:.75rem';
     w.appendChild(rfBtn);
-    w.appendChild(el('div',{css:{fontSize:'11px',color:'var(--color-text-secondary)',opacity:'0.5',marginTop:'.5rem'}},
-      pollCount>0?('Revision #'+pollCount+' — '+lastPoll):'Iniciando...'));
+    const _pc=el('div',{css:{fontSize:'11px',color:'var(--color-text-secondary)',opacity:'0.5',marginTop:'.5rem'}});
+    _pc.setAttribute('data-poll-count','1');
+    _pc.textContent=pollCount>0?('Revision #'+pollCount+' — '+lastPoll):'Iniciando...';
+    w.appendChild(_pc);
     page.appendChild(w);return page;
   }
 
