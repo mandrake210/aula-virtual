@@ -10,7 +10,14 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--font-sans,'system-ui');background:transparent;color:var(--color-text-primary,#111)}
+:root{
+--color-text-primary:#1a1a1a;--color-text-secondary:#555;
+--color-background-primary:#ffffff;--color-background-secondary:#f5f5f5;
+--color-border-tertiary:rgba(0,0,0,.13);--color-border-secondary:rgba(0,0,0,.22);
+--font-sans:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;--font-mono:monospace;
+--border-radius-md:8px;--border-radius-lg:12px;
+}
+body{font-family:var(--font-sans);background:#f0f2f5;color:#1a1a1a;min-height:100vh}
 .page{max-width:900px;margin:0 auto;padding:1.5rem}
 .card{background:var(--color-background-primary,#fff);border:0.5px solid var(--color-border-tertiary,rgba(0,0,0,.15));border-radius:12px;padding:1.5rem;margin-bottom:1rem}
 h1{font-size:22px;font-weight:500;margin-bottom:.25rem}
@@ -85,54 +92,43 @@ const SK = {
   mode:    'mode',
   groups:  'groups',
   exhist:  'exhist',
-  idx:     g => 'idx_' + (g||'all').replace(/[.:]/g,'_'),
-  sub:     (name, grp) => 'sub_' + btoa(unescape(encodeURIComponent((grp||'')+'||'+name))).replace(/[^a-zA-Z0-9]/g,'_').slice(0,50)
+  idx:     g => 'idx_' + (g||'all'),
+  sub:     (name, grp) => 'sub_' + btoa(unescape(encodeURIComponent((grp||'')+'||'+name))).replace(/[=+/]/g,'_').slice(0,60)
 };
 
 const COLORS = ['#185FA5','#3B6D11','#854F0B','#534AB7','#993556','#0F6E56','#993C1D'];
 
 // ── Storage — local server API ──────────────────────────────────────────
 // ── Firebase Realtime Database v8 ────────────────────────────────────────
-// Solo necesitas esta URL — consiguela en Firebase Console > Realtime Database
-const FB_DB_URL = "https://mi-aula-10abe-default-rtdb.firebaseio.com/";
-// Ejemplo: "https://mi-clase-a1b2c-default-rtdb.firebaseio.com"
+// EDITA AQUI: pega la URL de tu Firebase Realtime Database
+const FB_DB_URL = "https://mi-aula-10abe-default-rtdb.firebaseio.com";
 
 let _db = null;
 let storageOK = false;
 
-// Firebase no permite . # $ [ ] en rutas de datos
 function fk(k){ return 'av/' + String(k).replace(/[.#$\[\]]/g,'_'); }
 
 async function sGet(k){
   if(!_db) return null;
-  try{
-    const snap = await _db.ref(fk(k)).once('value');
-    return snap.exists() ? snap.val() : null;
-  }catch{ return null; }
+  try{ const snap=await _db.ref(fk(k)).once('value'); return snap.exists()?snap.val():null; }
+  catch{ return null; }
 }
 async function sSet(k,v){
   if(!_db) return false;
-  try{ await _db.ref(fk(k)).set(v); return true; }
-  catch{ return false; }
+  try{ await _db.ref(fk(k)).set(v); return true; }catch{ return false; }
 }
 async function sDel(k){
   if(!_db) return;
   try{ await _db.ref(fk(k)).remove(); }catch{}
 }
 async function checkStorage(){
-  if(!FB_DB_URL || FB_DB_URL.includes('PEGA_AQUI')){
-    console.warn('Aula Virtual: configura FB_DB_URL en el HTML');
-    return;
-  }
+  if(!FB_DB_URL||FB_DB_URL.includes('PEGA_AQUI')){ return; }
   try{
-    if(!firebase.apps.length) firebase.initializeApp({ databaseURL: FB_DB_URL });
-    _db = firebase.database();
+    if(!firebase.apps.length) firebase.initializeApp({databaseURL:FB_DB_URL});
+    _db=firebase.database();
     await _db.ref('_ping').set(Date.now());
-    storageOK = true;
-  }catch(e){
-    storageOK = false;
-    console.error('Firebase error:', e.message);
-  }
+    storageOK=true;
+  }catch(e){ storageOK=false; console.error('Firebase:',e.message); }
 }
 
 // ── DOCX reader ───────────────────────────────────────────────────────────
@@ -595,10 +591,33 @@ function render(){
 function renderLanding(){
   const page=el('div',{cls:'page'});
   if(!storageOK){
-    const _fw=el('div',{css:{background:'#FCEBEB',color:'#7f1d1d',padding:'1rem 1.25rem',borderRadius:'10px',fontSize:'13px',marginBottom:'1.5rem',lineHeight:'1.8',border:'0.5px solid #fca5a5'}});
-    _fw.innerHTML='<strong>Firebase no configurado</strong><br>Busca <code style="background:#fee2e2;padding:2px 5px;border-radius:4px">FB_DB_URL</code> en el HTML y pega la URL de tu base de datos.<br><a href="https://console.firebase.google.com" target="_blank" style="color:#991b1b;font-weight:500">Ir a Firebase Console →</a>';
-    page.appendChild(_fw);
+    const _w=el('div',{css:{background:'#fee2e2',color:'#7f1d1d',padding:'1rem 1.25rem',borderRadius:'10px',fontSize:'13px',marginBottom:'1.5rem',lineHeight:'1.8',border:'1px solid #fca5a5'}});
+    _w.innerHTML='<strong>Firebase no configurado.</strong> Busca <code style="background:#fecaca;padding:2px 5px;border-radius:4px">FB_DB_URL</code> en el HTML y reemplaza con la URL de tu base de datos Firebase.';
+    page.appendChild(_w);
   }
+  page.appendChild(el('div',{css:{textAlign:'center',paddingTop:'2rem',marginBottom:'2.5rem'}},
+    el('h1',{css:{fontSize:'28px'}},'Aula Virtual'),
+    el('p',{css:{fontSize:'13px',color:'var(--color-text-secondary)',marginTop:'6px'}},'Plataforma de evaluación y calificaciones')
+  ));
+  const row=el('div',{css:{display:'flex',gap:'1rem',maxWidth:'460px',margin:'0 auto'}});
+  row.appendChild(el('button',{cls:'land-btn',$click:()=>set({view:'teacher-login',err:''})},
+    el('div',{css:{fontSize:'38px',marginBottom:'10px'},html:'&#128105;&#8205;&#127979;'}),
+    el('div',{css:{fontSize:'16px',fontWeight:'500'}},'Soy Maestro'),
+    el('div',{css:{fontSize:'12px',color:'var(--color-text-secondary)',marginTop:'4px'}},'Panel de control')
+  ));
+  row.appendChild(el('button',{cls:'land-btn',$click:()=>set({view:'student-entry',err:''})},
+    el('div',{css:{fontSize:'38px',marginBottom:'10px'},html:'&#127979;'}),
+    el('div',{css:{fontSize:'16px',fontWeight:'500'}},'Soy Alumno'),
+    el('div',{css:{fontSize:'12px',color:'var(--color-text-secondary)',marginTop:'4px'}},'Entrar al aula')
+  ));
+  page.appendChild(row);
+  return page;
+}
+
+function renderTeacherLogin(){
+  const page=el('div',{cls:'page'});
+  page.appendChild(el('button',{cls:'btn-ghost',$click:()=>set({view:'landing',err:''})},'← Volver'));
+  page.appendChild(el('div',{css:{height:'1.5rem'}}));
   const card=el('div',{cls:'card',css:{maxWidth:'380px',margin:'0 auto'}});
   card.appendChild(el('h2',{},S.savedPin?'Acceso Maestro':'Configurar PIN'));
   card.appendChild(el('p',{css:{fontSize:'13px',color:'var(--color-text-secondary)',marginBottom:'1rem'}},S.savedPin?'Ingresa tu PIN.':'Primera vez: crea tu PIN de acceso.'));
@@ -1069,7 +1088,7 @@ function renderStudentEntry(){
   card.appendChild(el('h2',{},'Entrar al Aula'));
   if(!storageOK){
     card.appendChild(el('div',{css:{background:'#FAEEDA',color:'#854F0B',padding:'10px 14px',borderRadius:'8px',fontSize:'13px',marginBottom:'1rem'}},
-      '⚠️ Conexión no disponible. Usa el enlace del chat de Claude en todos los equipos.'));
+      'Firebase no configurado. Contacta al maestro.'));
   }
   card.appendChild(el('label',{},'Tu nombre completo'));
   let nv='',gv='';
