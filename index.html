@@ -96,43 +96,62 @@ const SK = {
 
 const COLORS = ['#185FA5','#3B6D11','#854F0B','#534AB7','#993556','#0F6E56','#993C1D'];
 
-// ── Firebase REST API (sin SDK, funciona en cualquier red) ───────────────
+// ── Storage: Firebase con fallback automatico a localStorage ─────────────
 const FB_DB_URL = "https://mi-aula-10abe-default-rtdb.firebaseio.com";
 
 let storageOK = false;
+let useFirebase = false;
+const LS_PREFIX = 'av__';
+
+// Timeout sin AbortController (compatible con todos los contextos)
+function fetchTimeout(url, opts, ms=5000){
+  return Promise.race([
+    fetch(url, opts),
+    new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')), ms))
+  ]);
+}
+
+function lsGet(k){ try{ return localStorage.getItem(LS_PREFIX+k); }catch{ return null; } }
+function lsSet(k,v){ try{ localStorage.setItem(LS_PREFIX+k, typeof v==='string'?v:JSON.stringify(v)); return true; }catch{ return false; } }
+function lsDel(k){ try{ localStorage.removeItem(LS_PREFIX+k); }catch{} }
 
 function fk(k){ return 'av/' + String(k).replace(/[.#$[\]]/g,'_'); }
 
-async function sGet(k){
-  try{
-    const r = await fetch(FB_DB_URL + '/' + fk(k) + '.json');
-    if(!r.ok) return null;
-    const v = await r.json();
-    return v === null ? null : (typeof v === 'string' ? v : JSON.stringify(v));
-  }catch{ return null; }
+async function fbGet(k){
+  const r = await fetchTimeout(FB_DB_URL+'/'+fk(k)+'.json');
+  if(!r.ok) return null;
+  const v = await r.json();
+  return v===null?null:(typeof v==='string'?v:JSON.stringify(v));
 }
-async function sSet(k, v){
-  try{
-    const r = await fetch(FB_DB_URL + '/' + fk(k) + '.json', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(v)
-    });
-    return r.ok;
-  }catch{ return false; }
+async function fbSet(k,v){
+  const r = await fetchTimeout(FB_DB_URL+'/'+fk(k)+'.json',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(v)});
+  return r.ok;
+}
+async function fbDel(k){
+  await fetchTimeout(FB_DB_URL+'/'+fk(k)+'.json',{method:'DELETE'});
+}
+
+async function sGet(k){
+  if(useFirebase){ try{ return await fbGet(k); }catch{ useFirebase=false; } }
+  return lsGet(k);
+}
+async function sSet(k,v){
+  if(useFirebase){ try{ return await fbSet(k,v); }catch{ useFirebase=false; } }
+  return lsSet(k,v);
 }
 async function sDel(k){
-  try{ await fetch(FB_DB_URL + '/' + fk(k) + '.json', {method:'DELETE'}); }catch{}
+  if(useFirebase){ try{ await fbDel(k); return; }catch{ useFirebase=false; } }
+  lsDel(k);
 }
+
 async function checkStorage(){
   try{
-    const r = await fetch(FB_DB_URL + '/av/_ping.json', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(Date.now())
-    });
-    storageOK = r.ok;
-  }catch(e){ storageOK = false; console.error('Firebase REST:', e.message); }
+    const r = await fetchTimeout(FB_DB_URL+'/av/_ping.json',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(Date.now())});
+    if(r.ok){ useFirebase=true; storageOK=true; return; }
+  }catch(e){ console.log('Firebase no disponible, usando localStorage'); }
+  useFirebase=false;
+  try{ localStorage.setItem(LS_PREFIX+'_ping','1'); storageOK=true; }
+  catch{ storageOK=false; }
 }
 
 // ── DOCX reader ───────────────────────────────────────────────────────────
@@ -605,7 +624,7 @@ function renderLanding(){
   const page=el('div',{cls:'page'});
   if(!storageOK){
     const _w=el('div',{css:{background:'#fee2e2',color:'#7f1d1d',padding:'1rem 1.25rem',borderRadius:'10px',fontSize:'13px',marginBottom:'1.5rem',lineHeight:'1.8',border:'1px solid #fca5a5'}});
-    _w.innerHTML='<strong>Firebase no configurado.</strong> Busca <code style="background:#fecaca;padding:2px 5px;border-radius:4px">FB_DB_URL</code> en el HTML y reemplaza con la URL de tu base de datos Firebase.';
+    _w.innerHTML='<strong>Modo local:</strong> Firebase no disponible. Los datos se guardan en este navegador. Para modo red, verifica la URL de Firebase.';
     page.appendChild(_w);
   }
   page.appendChild(el('div',{css:{textAlign:'center',paddingTop:'2rem',marginBottom:'2.5rem'}},
@@ -1030,7 +1049,7 @@ function tabGroups(){
       top.appendChild(el('span',{cls:'color-dot',css:{background:g.color,marginRight:'8px',width:'10px',height:'10px'}}));
       top.appendChild(el('span',{css:{fontWeight:'500',fontSize:'13px'}},g.name));
       card.appendChild(top);
-      const vb=btn('Ver calificaciones →','btn-ghost',()=>{refreshResults(g.id);set({tab:'results'});});
+      const vb=btn('Ver calificaciones →','btn-ghost',()=>{refreshResults(g.name);set({tab:'results'});});
       vb.style.cssText='font-size:12px;padding:5px 10px;width:100%';
       card.appendChild(vb); grid.appendChild(card);
     });
@@ -1049,15 +1068,15 @@ function tabResults(){
   const ab=btn('Todos',groupFilter==='all'?'btn-primary':'btn-ghost',()=>refreshResults('all'));
   ab.style.cssText='font-size:12px;padding:5px 12px'; fb.appendChild(ab);
   groups.forEach(g=>{
-    const isA=groupFilter===g.id;
-    const gb=btn(g.name,'btn-ghost',()=>refreshResults(g.id));
+    const isA=groupFilter===g.name;
+    const gb=btn(g.name,'btn-ghost',()=>refreshResults(g.name));
     gb.style.cssText=`font-size:12px;padding:5px 12px;${isA?`background:${g.color};color:#fff;border-color:${g.color};`:''}`;
     fb.appendChild(gb);
   });
   const rb=btn('↻','btn-ghost',()=>refreshResults(groupFilter));
   rb.style.cssText='font-size:12px;padding:5px 10px;margin-left:auto'; fb.appendChild(rb);
   wrap.appendChild(fb);
-  const groupName=groupFilter==='all'?'Todos los grupos':groups.find(g=>g.id===groupFilter)?.name||groupFilter;
+  const groupName=groupFilter==='all'?'Todos los grupos':groupFilter;
 
   if(results.length===0){
     const empty=el('div',{cls:'card',css:{textAlign:'center',padding:'3rem'}});
